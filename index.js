@@ -79,6 +79,115 @@ function maniPulateStream() {
   }
 }
 
+async function bug_687574_callLocalPeers() {
+  let lc1; 
+  let lc2;
+  lc1 = new RTCPeerConnection();
+  lc1.count = 0;
+  lc1.addEventListener('icecandidate', e => onIceCandidate(lc1, e));
+  lc1.addEventListener('connectionstatechange', e => onconnectionstatechange(lc1, e));
+
+  lc2 = new RTCPeerConnection();
+  lc2.count = 0;
+  lc2.addEventListener('icecandidate', e => onIceCandidate(lc2, e));
+  lc2.addEventListener('connectionstatechange', e => onconnectionstatechange(lc2, e));
+  lc2.addEventListener('track', gotRemoteStream);
+
+  mediaStreamDest.stream.getTracks().forEach(track => lc1.addTrack(track, mediaStreamDest.stream));
+
+  function onconnectionstatechange(pc, event) {
+    if (event.currentTarget.connectionState === 'connected') {
+      try { // TODO Dirty try hack
+        // console.log('PEER connected webrtc');
+        workletAudioRec.disconnect();
+        workletAudioRec.connect(mediaStreamDest);
+      } catch (e) {
+      }
+    } else if (event.currentTarget.connectionState === 'disconnected') {
+      // console.log('PEER disconnected');
+      lc1.close();
+      lc2.close();
+      lc1 = null;
+      lc2 = null;
+      try {
+        workletAudioRec.disconnect();
+        workletAudioRec.connect(myAudioContext.destination);
+        // console.log('PEER connected normal audio api');
+      } catch (e) {
+      }
+      cthis.audio.bug_687574_callLocalPeers();
+    }
+  }
+
+  try {
+    const offer = await lc1.createOffer();
+    await onCreateOfferSuccess(offer);
+  } catch (e) {
+    onError();
+  }
+
+  function gotRemoteStream(e) {
+    const audio = document.createElement('audio');
+    audio.srcObject = e.streams[0];
+    audio.autoplay = true;
+  }
+
+  async function onCreateOfferSuccess(desc) {
+    try {
+      await lc1.setLocalDescription(desc);
+      await lc2.setRemoteDescription(desc);
+    } catch (e) {
+      onError();
+    }
+    try {
+      const answer = await lc2.createAnswer();
+      await onCreateAnswerSuccess(answer);
+    } catch (e) {
+      onError();
+    }
+  }
+
+  async function onCreateAnswerSuccess(desc) {
+    try {
+      await lc2.setLocalDescription(desc);
+      await lc1.setRemoteDescription(desc);
+    } catch (e) {
+      onError();
+    }
+  }
+
+  async function onIceCandidate(pc, event) {
+    if (event.candidate) {
+      if (event.candidate.type === 'host') { // We only want to connect over LAN
+        try {
+          await (getOtherPc(pc).addIceCandidate(event.candidate));
+        } catch (e) {
+          onError();
+        }
+      }
+    }
+  }
+
+  function getOtherPc(pc) {
+    return (pc === lc1) ? lc2 : lc1;
+  }
+
+  function onError() {
+    // Peer connection failed, fallback to standard
+    // console.log('PEER fallback');
+    try {
+      workletAudioRec.connect(myAudioContext.destination);
+      lc1.close();
+      lc2.close();
+      lc1 = null;
+      lc2 = null;
+    } catch (e) {
+      lc1 = null;
+      lc2 = null;
+    }
+  }
+}
+
 function initPlay() {
   console.log('audio init worklet suman');
   if (typeof workletAudioRec !== 'undefined') {
@@ -91,6 +200,8 @@ function initPlay() {
     workletAudioRec = new AudioWorkletNode(myAudioContext, 'worklet-audio-rec');
     mediaStreamDest = myAudioContext.createMediaStreamDestination();
     workletAudioRec.connect(myAudioContext.destination);
+
+     bug_687574_callLocalPeers();
 
     const audioReadyChannel = new MessageChannel();
     workerIO.postMessage({
